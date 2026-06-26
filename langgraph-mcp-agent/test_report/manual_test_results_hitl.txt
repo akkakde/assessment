@@ -1,0 +1,85 @@
+Manual Test Results — Human-in-the-Loop Approval Gate
+======================================================
+Date: 2026-06-25
+Mode: USE_MOCK_LLM=true
+Python: 3.13.14
+Changes tested:
+  - Destructive actions (delete_file, update_record) intercepted before execution
+  - Graph pauses via interrupt() and presents approval prompt to user
+  - Denial path returns graceful cancellation message
+  - Approval path executes tool and returns real result
+  - reasoning_trace records every approval decision
+
+--- 1. list files (safe) ---
+Input: tool_list_files { directory: /data/reports/ }
+Output:
+  /data/reports/q4_2025.csv
+  /data/reports/q3_2025.csv
+Trace: [{'step': 1, 'node': 'execute_tools', 'decision': 'Tool tool_list_files succeeded'}]
+Result: PASS
+
+--- 2. read valid file (safe) ---
+Input: tool_read_file { path: /data/users.csv }
+Output:
+  id,name,email,role
+  1,Alice,alice@acme.com,admin
+  2,Bob,bob@acme.com,viewer
+Trace: [{'step': 1, 'node': 'execute_tools', 'decision': 'Tool tool_read_file succeeded'}]
+Result: PASS
+
+--- 3. read missing file — failure recovery ---
+Input: tool_read_file { path: /data/nonexistent.csv }
+Output (first 150 chars):
+  The tool 'tool_read_file' was called with arguments {'path': '/data/nonexistent.csv'}
+  but failed with error: No file at /data/nonexistent.csv
+  Analyze what went wrong...
+Retry count: 1
+Trace: [{'step': 1, 'node': 'execute_tools', 'decision': 'Tool tool_read_file failed: FileNotFound - will reflect'}]
+Result: PASS
+
+--- 4. read missing file — max retries exceeded ---
+Input: tool_read_file { path: /impossible/file.xyz } (retry_count=2)
+Output:
+  Tool failed after retries: No file at /impossible/file.xyz. I'll explain what happened to the user.
+Trace: [{'step': 1, 'node': 'execute_tools', 'decision': 'Max retries reached for tool_read_file'}]
+Result: PASS
+
+--- 5. query database (safe) ---
+Input: tool_query_database { sql_like: SELECT * FROM users WHERE status='active' }
+Output:
+  id | name | email | status | role
+  ---------------------------------
+  1 | Alice | alice@acme.com | active | admin
+  3 | Charlie | charlie@acme.com | active | editor
+Trace: [{'step': 1, 'node': 'execute_tools', 'decision': 'Tool tool_query_database succeeded'}]
+Result: PASS
+
+--- 6. delete_file — HITL blocks (graph pauses) ---
+Input: tool_delete_file { path: /data/users.csv }
+Interrupted: True
+Interrupt message:
+  Agent wants to tool_delete_file with {'path': '/data/users.csv'}. Approve? (yes/no)
+Action: tool_delete_file
+Result: PASS
+
+--- 7. delete_file — user denies ---
+Human input: "no"
+Final message:
+  Understood, I will not delete the file.
+Trace:
+  {'step': 1, 'node': 'approve', 'decision': 'Destructive action tool_delete_file detected, requesting approval'}
+  {'step': 2, 'node': 'approve', 'decision': 'Human denied tool_delete_file'}
+Result: PASS
+
+--- 8. delete_file — user approves ---
+Human input: "yes"
+Final message:
+  The file has been deleted successfully.
+Trace:
+  {'step': 1, 'node': 'approve', 'decision': 'Destructive action tool_delete_file detected, requesting approval'}
+  {'step': 2, 'node': 'approve', 'decision': 'Human approved tool_delete_file'}
+Result: PASS
+
+===================
+Total: 8/8 PASSED
+===================

@@ -1,11 +1,11 @@
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_anthropic import ChatAnthropic
-from langgraph.graph import StateGraph, START
-from langgraph.prebuilt import tools_condition
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import interrupt
 
 from agent.state import AgentState
-from agent.config import MODEL_NAME, MAX_RETRIES
+from agent.config import MODEL_NAME, MAX_RETRIES, DESTRUCTIVE_ACTIONS
 from agent.prompts import SYSTEM_PROMPT, REFLECTION_PROMPT
 from mcp_server.tools import (
     read_file,
@@ -82,6 +82,38 @@ def agent_node(state: AgentState) -> dict:
     return {"messages": [response]}
 
 
+def route_tool_call(state: AgentState) -> str:
+    last_message = state["messages"][-1]
+    if not getattr(last_message, "tool_calls", None):
+        return "end"
+    tool_name = last_message.tool_calls[0]["name"]
+    if tool_name in DESTRUCTIVE_ACTIONS:
+        return "approve"
+    return "execute_tools"
+
+
+def approve(state: AgentState) -> dict:
+    tool_call = state["messages"][-1].tool_calls[0]
+    name, args, call_id = tool_call["name"], tool_call["args"], tool_call["id"]
+    trace = list(state.get("reasoning_trace", []))
+    step = len(trace) + 1
+
+    trace.append({"step": step, "node": "approve", "decision": f"Destructive action {name} detected, requesting approval"})
+
+    response = interrupt({"action": name, "args": args, "message": f"Agent wants to {name} with {args}. Approve? (yes/no)"})
+
+    if str(response).strip().lower() != "yes":
+        trace.append({"step": step + 1, "node": "approve", "decision": f"Human denied {name}"})
+        return {"messages": [ToolMessage(content="Action was denied by user.", tool_call_id=call_id)], "reasoning_trace": trace}
+
+    trace.append({"step": step + 1, "node": "approve", "decision": f"Human approved {name}"})
+    try:
+        result = tools_by_name[name](**args)
+        return {"messages": [ToolMessage(content=str(result), tool_call_id=call_id)], "reasoning_trace": trace}
+    except ToolError as e:
+        return {"messages": [ToolMessage(content=f"Tool error after approval: {e.message}", tool_call_id=call_id)], "reasoning_trace": trace}
+
+
 def execute_tools(state: AgentState) -> dict:
     last_message = state["messages"][-1]
     tool_call = last_message.tool_calls[0]
@@ -108,9 +140,11 @@ def execute_tools(state: AgentState) -> dict:
 
 builder = StateGraph(AgentState)
 builder.add_node("agent", agent_node)
+builder.add_node("approve", approve)
 builder.add_node("tools", execute_tools)
 builder.add_edge(START, "agent")
-builder.add_conditional_edges("agent", tools_condition)
+builder.add_conditional_edges("agent", route_tool_call, {"approve": "approve", "execute_tools": "tools", "end": END})
+builder.add_edge("approve", "agent")
 builder.add_edge("tools", "agent")
 
 app = builder.compile()
