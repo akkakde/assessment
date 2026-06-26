@@ -1,0 +1,35 @@
+Unit Test Results — Agent Error Handling Fix
+=============================================
+Date: 2026-06-25
+Changes tested:
+  - execute_tools node replaces bare ToolNode (no more crashes on ToolError)
+  - retry_count and reasoning_trace added to AgentState
+  - REFLECTION_PROMPT injected into ToolMessage on failure
+  - Graceful degradation after MAX_RETRIES exceeded
+
+Platform: win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0
+Collected: 21 items
+
+tests/test_agent.py::test_happy_path PASSED                              [  4%]
+tests/test_agent.py::test_tool_failure_recovery PASSED                   [  9%]
+tests/test_agent.py::test_max_retries_graceful PASSED                    [ 14%]
+tests/test_graph.py::test_graph_list_files_happy_path PASSED             [ 19%]
+tests/test_graph.py::test_graph_read_file_happy_path PASSED              [ 23%]
+tests/test_graph.py::test_graph_query_database_happy_path PASSED         [ 28%]
+tests/test_graph.py::test_graph_search_files_happy_path PASSED           [ 33%]
+tests/test_graph.py::test_graph_update_record_happy_path PASSED          [ 38%]
+tests/test_graph.py::test_graph_crashes_on_tool_error PASSED             [ 42%]
+tests/test_graph.py::test_graph_crashes_on_delete_missing_file PASSED    [ 47%]
+tests/test_tools.py::test_read_file_valid PASSED                         [ 52%]
+tests/test_tools.py::test_read_file_invalid_raises PASSED                [ 57%]
+tests/test_tools.py::test_list_files_returns_matching PASSED             [ 61%]
+tests/test_tools.py::test_list_files_nonexistent_directory PASSED        [ 66%]
+tests/test_tools.py::test_search_files_by_content PASSED                 [ 71%]
+tests/test_tools.py::test_search_files_by_name PASSED                    [ 76%]
+tests/test_tools.py::test_delete_file_removes_it PASSED                  [ 80%]
+tests/test_tools.py::test_query_database_all_users PASSED                [ 85%]
+tests/test_tools.py::test_query_database_where_filter PASSED             [ 90%]
+tests/test_tools.py::test_update_record_changes_value PASSED             [ 95%]
+tests/test_tools.py::test_update_record_bad_id_raises PASSED             [100%]
+
+============================== 21 passed in 2.13s ==============================

@@ -1,12 +1,12 @@
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_anthropic import ChatAnthropic
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.graph import StateGraph, START
+from langgraph.prebuilt import tools_condition
 
 from agent.state import AgentState
-from agent.config import MODEL_NAME
-from agent.prompts import SYSTEM_PROMPT
+from agent.config import MODEL_NAME, MAX_RETRIES
+from agent.prompts import SYSTEM_PROMPT, REFLECTION_PROMPT
 from mcp_server.tools import (
     read_file,
     list_files,
@@ -14,6 +14,7 @@ from mcp_server.tools import (
     delete_file,
     query_database,
     update_record,
+    ToolError,
 )
 
 
@@ -62,6 +63,15 @@ tools = [
     tool_update_record,
 ]
 
+tools_by_name = {
+    "tool_read_file": read_file,
+    "tool_list_files": list_files,
+    "tool_search_files": search_files,
+    "tool_delete_file": delete_file,
+    "tool_query_database": query_database,
+    "tool_update_record": update_record,
+}
+
 llm = ChatAnthropic(model=MODEL_NAME)
 llm_with_tools = llm.bind_tools(tools)
 
@@ -72,12 +82,33 @@ def agent_node(state: AgentState) -> dict:
     return {"messages": [response]}
 
 
-# ToolNode runs tool calls as-is — no try/except, ToolError will crash the graph
-tool_node = ToolNode(tools)
+def execute_tools(state: AgentState) -> dict:
+    last_message = state["messages"][-1]
+    tool_call = last_message.tool_calls[0]
+    name = tool_call["name"]
+    args = tool_call["args"]
+    call_id = tool_call["id"]
+    trace = list(state.get("reasoning_trace", []))
+    step = len(trace) + 1
+
+    try:
+        result = tools_by_name[name](**args)
+        trace.append({"step": step, "node": "execute_tools", "decision": f"Tool {name} succeeded"})
+        return {"messages": [ToolMessage(content=str(result), tool_call_id=call_id)], "retry_count": 0, "reasoning_trace": trace}
+    except ToolError as e:
+        retry_count = state.get("retry_count", 0) + 1
+        if retry_count > MAX_RETRIES:
+            trace.append({"step": step, "node": "execute_tools", "decision": f"Max retries reached for {name}"})
+            content = f"Tool failed after retries: {e.message}. I'll explain what happened to the user."
+        else:
+            trace.append({"step": step, "node": "execute_tools", "decision": f"Tool {name} failed: {e.error_type} - will reflect"})
+            content = REFLECTION_PROMPT.format(tool_name=name, tool_args=args, error_message=e.message)
+        return {"messages": [ToolMessage(content=content, tool_call_id=call_id)], "retry_count": retry_count, "reasoning_trace": trace}
+
 
 builder = StateGraph(AgentState)
 builder.add_node("agent", agent_node)
-builder.add_node("tools", tool_node)
+builder.add_node("tools", execute_tools)
 builder.add_edge(START, "agent")
 builder.add_conditional_edges("agent", tools_condition)
 builder.add_edge("tools", "agent")
