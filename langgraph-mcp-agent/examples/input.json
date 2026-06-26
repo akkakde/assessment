@@ -1,1 +1,8 @@
-{"messages": [{"role": "user", "content": "List all files in /data/reports/"}]}
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Delete the file at /data/old_backup.csv, then find the latest report in /data/reports/"
+    }
+  ]
+}

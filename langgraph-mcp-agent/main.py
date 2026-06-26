@@ -18,7 +18,20 @@ def _build_mock_llm(user_message: str):
     """
     msg = user_message.lower()
 
-    if "list" in msg:
+    if "old_backup" in msg:
+        calls = [
+            AIMessage(content="I'll delete /data/old_backup.csv first. This is a destructive action — requesting your approval.", tool_calls=[ToolCall(name="tool_delete_file", args={"path": "/data/old_backup.csv"}, id="m0a")]),
+            AIMessage(content="The file doesn't exist. Let me search to confirm.", tool_calls=[ToolCall(name="tool_search_files", args={"query": "old_backup"}, id="m0b")]),
+            AIMessage(content="Confirmed — no old_backup file found. Now listing reports.", tool_calls=[ToolCall(name="tool_list_files", args={"directory": "/data/reports/"}, id="m0c")]),
+            AIMessage(content="Here's what I found:\n\n1. The file /data/old_backup.csv doesn't exist — it may have been previously deleted.\n2. The latest report in /data/reports/ is q4_2025.csv.\n\nWould you like me to read the Q4 2025 report?"),
+        ]
+        idx = [0]
+        def multi_step(messages):
+            r = calls[idx[0]]
+            idx[0] = min(idx[0] + 1, len(calls) - 1)
+            return r
+        return multi_step
+    elif "list" in msg:
         first_call = AIMessage(content="", tool_calls=[ToolCall(name="tool_list_files", args={"directory": "/data/"}, id="m1")])
     elif "delete" in msg:
         first_call = AIMessage(content="", tool_calls=[ToolCall(name="tool_delete_file", args={"path": "/data/users.csv"}, id="m6")])
@@ -53,9 +66,21 @@ def _build_mock_llm(user_message: str):
     return mock_invoke
 
 
+def _serialize_messages(messages):
+    out = []
+    for m in messages:
+        role = getattr(m, "type", "unknown")
+        entry = {"role": role, "content": m.content}
+        if getattr(m, "tool_calls", None):
+            entry["tool_calls"] = [{"name": tc["name"], "args": tc["args"]} for tc in m.tool_calls]
+        out.append(entry)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", help="Path to input JSON file")
+    parser.add_argument("--save", action="store_true", help="Save output to examples/output.json")
     parser.add_argument("message", nargs="?", default="List all files in /data/")
     args = parser.parse_args()
 
@@ -70,26 +95,33 @@ def main():
     checkpointer = MemorySaver()
     graph = builder.compile(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "cli-1"}}
+    mock_callable = _build_mock_llm(user_message) if USE_MOCK_LLM else None
 
-    if USE_MOCK_LLM:
-        with patch("agent.graph.llm_with_tools") as mock_llm:
-            mock_llm.invoke.side_effect = _build_mock_llm(user_message)
-            result = graph.invoke(input_data, config)
-    else:
-        result = graph.invoke(input_data, config)
+    def invoke(payload):
+        if USE_MOCK_LLM:
+            with patch("agent.graph.llm_with_tools") as mock_llm:
+                mock_llm.invoke.side_effect = mock_callable
+                return graph.invoke(payload, config)
+        return graph.invoke(payload, config)
+
+    result = invoke(input_data)
 
     while graph.get_state(config).next:
         interrupt_val = graph.get_state(config).tasks[0].interrupts[0].value
         print(f"\n{interrupt_val['message']}")
         user_input = input("Your decision: ").strip()
-        if USE_MOCK_LLM:
-            with patch("agent.graph.llm_with_tools") as mock_llm:
-                mock_llm.invoke.side_effect = _build_mock_llm(user_message)
-                result = graph.invoke(Command(resume=user_input), config)
-        else:
-            result = graph.invoke(Command(resume=user_input), config)
+        result = invoke(Command(resume=user_input))
 
     print(result["messages"][-1].content)
+
+    if args.save:
+        output = {
+            "messages": _serialize_messages(result["messages"]),
+            "reasoning_trace": result.get("reasoning_trace", []),
+        }
+        with open("examples/output.json", "w") as f:
+            json.dump(output, f, indent=2)
+        print("\nOutput saved to examples/output.json")
 
 
 if __name__ == "__main__":
